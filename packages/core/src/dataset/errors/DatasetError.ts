@@ -58,7 +58,12 @@ export class DuplicateDocumentError extends DomainError {
 }
 
 export class UnsupportedSourceError extends DomainError {
-  constructor(source: string) {
-    super(`Unsupported dataset source: "${source}"`, "UNSUPPORTED_SOURCE");
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, "UNSUPPORTED_SOURCE");
+    if (options?.cause !== undefined) {
+      // Capture the original error so stack traces and error codes are
+      // preserved for debugging (e.g. filesystem ENOENT / EACCES errors).
+      Object.defineProperty(this, "cause", { value: options.cause, enumerable: false });
+    }
   }
 }
