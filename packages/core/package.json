@@ -22,6 +22,6 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "pnpm build && node --test tests/dataset.test.ts tests/validation.test.ts"
+    "test": "pnpm build && node --test tests/dataset.test.ts tests/validation.test.ts tests/versioning.test.ts tests/storage.test.ts"
   }
 }

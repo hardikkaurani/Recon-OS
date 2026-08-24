@@ -5,6 +5,11 @@ export interface ResolvedSource {
   readonly uri: URI;
   readonly pathOrLocation: string;
   readonly mediaType?: string;
+  readonly scheme?: string;
+  readonly exists?: boolean;
+  readonly isDirectory?: boolean;
+  readonly size?: number;
+  readonly metadata?: Record<string, unknown>;
 }
 
 /**
@@ -12,9 +17,17 @@ export interface ResolvedSource {
  */
 export interface SourceResolver {
   /**
-   * Resolves a dataset source to a ResolvedSource descriptor.
-   * @param source - The source to resolve
+   * Resolves a dataset source or URI to a ResolvedSource descriptor.
+   * @param source - The source specification or URI to resolve
    * @returns A promise that resolves to a ResolvedSource
    */
-  resolve(source: DatasetSource | URI): Promise<ResolvedSource>;
+  resolve(source: DatasetSource | URI | string): Promise<ResolvedSource>;
+
+  /**
+   * Evaluates whether this resolver supports the specified source or URI.
+   * @param source - The source specification or URI to check
+   * @returns True if supported, false otherwise
+   */
+  supports(source: DatasetSource | URI | string): boolean;
 }
+
