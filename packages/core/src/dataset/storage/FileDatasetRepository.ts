@@ -12,9 +12,18 @@ import { Version } from "../value-objects/Version.js";
 import { DocumentId } from "../value-objects/DocumentId.js";
 import { DocumentName } from "../value-objects/DocumentName.js";
 import { DocumentFingerprint } from "../value-objects/DocumentFingerprint.js";
+import { Timestamp } from "../value-objects/Timestamp.js";
 import { DocumentType } from "../enums/DocumentType.js";
 import { InvalidDatasetError } from "../errors/DatasetError.js";
 import { ContentHasher } from "../versioning/ContentHasher.js";
+
+interface RawDocumentRecord {
+  id: string;
+  name?: string;
+  type?: DocumentType;
+  content?: string;
+  fingerprint?: string | null;
+}
 
 export class FileDatasetRepository implements DatasetRepository {
   private readonly baseDir: string;
@@ -75,8 +84,8 @@ export class FileDatasetRepository implements DatasetRepository {
         documentCount: parsed.version.documentCount ?? 0,
         totalBytes: parsed.version.totalBytes ?? 0,
         isPublished: parsed.version.isPublished ?? true,
-        publishedAt: parsed.version.publishedAt ? new (await import("../value-objects/Timestamp.js")).Timestamp(new Date(parsed.version.publishedAt)) : undefined,
-        createdAt: parsed.version.createdAt ? new (await import("../value-objects/Timestamp.js")).Timestamp(new Date(parsed.version.createdAt)) : undefined,
+        publishedAt: parsed.version.publishedAt ? Timestamp.from(parsed.version.publishedAt) : undefined,
+        createdAt: parsed.version.createdAt ? Timestamp.from(parsed.version.createdAt) : undefined,
         documentIds: parsed.version.documentIds ?? [],
       });
 
@@ -147,9 +156,20 @@ export class FileDatasetRepository implements DatasetRepository {
       throw new InvalidDatasetError(
         `Dataset version v${version.getValue()} is already published and immutable`
       );
-    } catch (err: any) {
-      if (err instanceof InvalidDatasetError) throw err;
-      // File does not exist, proceed
+    } catch (err: unknown) {
+      if (err instanceof InvalidDatasetError) {
+        throw err;
+      }
+      if (
+        err &&
+        typeof err === "object" &&
+        "code" in err &&
+        (err as { code: string }).code === "ENOENT"
+      ) {
+        // File does not exist — publishing may proceed.
+      } else {
+        throw err;
+      }
     }
 
     const docList = Array.from(documents);
@@ -169,7 +189,7 @@ export class FileDatasetRepository implements DatasetRepository {
       documentCount: docList.length,
       totalBytes,
       isPublished: true,
-      publishedAt: new (await import("../value-objects/Timestamp.js")).Timestamp(new Date()),
+      publishedAt: Timestamp.now(),
       documentIds,
     });
 
@@ -269,13 +289,13 @@ export class FileDatasetRepository implements DatasetRepository {
     }
   }
 
-  private mapRawDoc(raw: any, datasetId: DatasetId): Document {
+  private mapRawDoc(raw: RawDocumentRecord, datasetId: DatasetId): Document {
     const checksum = ContentHasher.hashString(raw.content ?? "");
     return new Document({
       id: DocumentId.from(raw.id),
       datasetId,
       name: DocumentName.from(raw.name ?? raw.id),
-      type: (raw.type as DocumentType) ?? DocumentType.TEXT,
+      type: raw.type ?? DocumentType.TEXT,
       content: raw.content ?? "",
       fingerprint: raw.fingerprint ? DocumentFingerprint.from(raw.fingerprint) : DocumentFingerprint.from(checksum.getValue()),
     });

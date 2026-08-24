@@ -19,11 +19,27 @@ import { URI } from "../value-objects/URI.js";
 import { InvalidDatasetError } from "../errors/DatasetError.js";
 import { ContentHasher } from "../versioning/ContentHasher.js";
 
-export class LocalFileDatasetLoader implements DatasetLoader {
-  private readonly resolver: SourceResolver;
+export interface LocalFileDatasetLoaderOptions {
+  resolver?: SourceResolver;
+  maxFileSizeBytes?: number;
+}
 
-  constructor(resolver: SourceResolver = new LocalFileSourceResolver()) {
-    this.resolver = resolver;
+interface RawDocPayload {
+  id: string;
+  name?: string;
+  type?: DocumentType;
+  content?: string;
+  fingerprint?: string | null;
+}
+
+export class LocalFileDatasetLoader implements DatasetLoader {
+  private static readonly DEFAULT_MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024; // 10 MB default limit
+  private readonly resolver: SourceResolver;
+  private readonly maxFileSizeBytes: number;
+
+  constructor(options?: LocalFileDatasetLoaderOptions) {
+    this.resolver = options?.resolver ?? new LocalFileSourceResolver();
+    this.maxFileSizeBytes = options?.maxFileSizeBytes ?? LocalFileDatasetLoader.DEFAULT_MAX_FILE_SIZE_BYTES;
   }
 
   public async load(source: DatasetSource | URI | string): Promise<DatasetLoadResult> {
@@ -34,6 +50,12 @@ export class LocalFileDatasetLoader implements DatasetLoader {
 
     if (resolved.isDirectory) {
       return this.loadFromDirectory(resolved.pathOrLocation, resolved.uri);
+    }
+
+    if (resolved.size !== undefined && resolved.size > this.maxFileSizeBytes) {
+      throw new InvalidDatasetError(
+        `File size (${resolved.size} bytes) exceeds maximum allowed limit (${this.maxFileSizeBytes} bytes)`
+      );
     }
 
     const ext = path.extname(resolved.pathOrLocation).toLowerCase();
@@ -50,7 +72,7 @@ export class LocalFileDatasetLoader implements DatasetLoader {
   }
 
   private async loadFromJsonManifest(filePath: string, uri: URI): Promise<DatasetLoadResult> {
-    const content = await fsPromises.readFile(filePath, "utf8");
+    const content = await this.readFileWithLimit(filePath);
     try {
       const parsed = JSON.parse(content);
       if (parsed && parsed.id && parsed.name && Array.isArray(parsed.documents)) {
@@ -75,10 +97,11 @@ export class LocalFileDatasetLoader implements DatasetLoader {
           });
         }
 
-        const docs = (parsed.documents as any[]).map((d) => this.mapRawDocToEntity(d, dataset.getId()));
+        const docs = (parsed.documents as RawDocPayload[]).map((d) => this.mapRawDocToEntity(d, dataset.getId()));
         return { dataset, documents: Object.freeze(docs) };
       }
-    } catch {
+    } catch (err: unknown) {
+      if (err instanceof InvalidDatasetError) throw err;
       // Fallback if plain JSON file is not a Recon-OS Dataset JSON
     }
 
@@ -96,13 +119,23 @@ export class LocalFileDatasetLoader implements DatasetLoader {
     const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
 
     let lineIndex = 0;
+    let totalBytesAccumulated = 0;
+
     for await (const line of rl) {
       lineIndex++;
       const trimmed = line.trim();
       if (!trimmed) continue;
 
+      totalBytesAccumulated += Buffer.byteLength(trimmed, "utf8");
+      if (totalBytesAccumulated > this.maxFileSizeBytes) {
+        fileStream.destroy();
+        throw new InvalidDatasetError(
+          `JSONL file "${path.basename(filePath)}" total content size exceeded maximum allowed limit (${this.maxFileSizeBytes} bytes)`
+        );
+      }
+
       try {
-        const record = JSON.parse(trimmed);
+        const record = JSON.parse(trimmed) as RawDocPayload;
         const docId = DocumentId.from(record.id ?? `doc_${lineIndex}`);
         const docName = DocumentName.from(record.name ?? `Record ${lineIndex}`);
         const textContent = typeof record.content === "string" ? record.content : JSON.stringify(record);
@@ -113,14 +146,15 @@ export class LocalFileDatasetLoader implements DatasetLoader {
           id: docId,
           datasetId,
           name: docName,
-          type: (record.type as DocumentType) ?? DocumentType.TEXT,
+          type: record.type ?? DocumentType.TEXT,
           content: textContent,
           fingerprint,
         });
 
         documents.push(doc);
-      } catch {
-        // Skip unparseable line or treat as plain text line
+      } catch (err: unknown) {
+        if (err instanceof InvalidDatasetError) throw err;
+        // Skip unparseable line
       }
     }
 
@@ -143,14 +177,19 @@ export class LocalFileDatasetLoader implements DatasetLoader {
 
     const entries = await fsPromises.readdir(dirPath, { withFileTypes: true });
     const documents: Document[] = [];
+    let totalDirectoryBytes = 0;
 
     for (const entry of entries) {
       if (entry.isFile()) {
         const entryPath = path.join(dirPath, entry.name);
-        const stream = fs.createReadStream(entryPath, { encoding: "utf8" });
-        let textContent = "";
-        for await (const chunk of stream) {
-          textContent += chunk;
+        const textContent = await this.readFileWithLimit(entryPath);
+        totalDirectoryBytes += Buffer.byteLength(textContent, "utf8");
+
+        if (totalDirectoryBytes > this.maxFileSizeBytes * 5) {
+          // Guard against aggregate directory size explosion
+          throw new InvalidDatasetError(
+            `Directory "${dirName}" aggregate content size exceeded maximum safety limit`
+          );
         }
 
         const checksum = ContentHasher.hashString(textContent);
@@ -190,11 +229,7 @@ export class LocalFileDatasetLoader implements DatasetLoader {
     const datasetName = DatasetName.from(rawName);
     const datasetSource = DatasetSource.from("file", uri.getValue());
 
-    const stream = fs.createReadStream(filePath, { encoding: "utf8" });
-    let textContent = "";
-    for await (const chunk of stream) {
-      textContent += chunk;
-    }
+    const textContent = await this.readFileWithLimit(filePath);
 
     const checksum = ContentHasher.hashString(textContent);
     const docId = DocumentId.from(`doc_${rawName.toLowerCase().replace(/[^a-z0-9]/g, "_")}`);
@@ -221,6 +256,33 @@ export class LocalFileDatasetLoader implements DatasetLoader {
     return { dataset, documents: Object.freeze([doc]) };
   }
 
+  private async readFileWithLimit(filePath: string): Promise<string> {
+    const stats = await fsPromises.stat(filePath);
+    if (stats.size > this.maxFileSizeBytes) {
+      throw new InvalidDatasetError(
+        `File "${path.basename(filePath)}" size (${stats.size} bytes) exceeds maximum allowed limit (${this.maxFileSizeBytes} bytes)`
+      );
+    }
+
+    const stream = fs.createReadStream(filePath, { encoding: "utf8" });
+    let textContent = "";
+    let currentBytes = 0;
+
+    for await (const chunk of stream) {
+      const chunkStr = String(chunk);
+      currentBytes += Buffer.byteLength(chunkStr, "utf8");
+      if (currentBytes > this.maxFileSizeBytes) {
+        stream.destroy();
+        throw new InvalidDatasetError(
+          `File "${path.basename(filePath)}" content length exceeded maximum limit (${this.maxFileSizeBytes} bytes)`
+        );
+      }
+      textContent += chunkStr;
+    }
+
+    return textContent;
+  }
+
   private inferDocumentType(fileName: string): DocumentType {
     const ext = path.extname(fileName).toLowerCase();
     switch (ext) {
@@ -240,13 +302,13 @@ export class LocalFileDatasetLoader implements DatasetLoader {
     }
   }
 
-  private mapRawDocToEntity(raw: any, datasetId: DatasetId): Document {
+  private mapRawDocToEntity(raw: RawDocPayload, datasetId: DatasetId): Document {
     const checksum = ContentHasher.hashString(raw.content ?? "");
     return new Document({
       id: DocumentId.from(raw.id),
       datasetId,
       name: DocumentName.from(raw.name ?? raw.id),
-      type: (raw.type as DocumentType) ?? DocumentType.TEXT,
+      type: raw.type ?? DocumentType.TEXT,
       content: raw.content ?? "",
       fingerprint: raw.fingerprint ? DocumentFingerprint.from(raw.fingerprint) : DocumentFingerprint.from(checksum.getValue()),
     });

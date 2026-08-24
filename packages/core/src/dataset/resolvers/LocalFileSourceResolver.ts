@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL, fileURLToPath } from "node:url";
 import { SourceResolver, ResolvedSource } from "../interfaces/SourceResolver.js";
 import { DatasetSource } from "../value-objects/DatasetSource.js";
 import { URI } from "../value-objects/URI.js";
@@ -61,9 +62,10 @@ export class LocalFileSourceResolver implements SourceResolver {
 
     const ext = path.extname(absPath).toLowerCase();
     const mediaType = LocalFileSourceResolver.EXTENSION_MEDIA_TYPES[ext] ?? "application/octet-stream";
+    const fileUrl = pathToFileURL(absPath).href;
 
     return {
-      uri: URI.from(absPath),
+      uri: URI.from(fileUrl),
       pathOrLocation: absPath,
       mediaType,
       scheme: "file",
@@ -86,12 +88,11 @@ export class LocalFileSourceResolver implements SourceResolver {
 
   private normalizeFilePath(rawUri: string): string {
     if (rawUri.startsWith("file://")) {
-      let fileUrlPath = rawUri.slice(7);
-      // Windows URI file:///C:/path handling
-      if (/^\/[a-zA-Z]:/.test(fileUrlPath)) {
-        fileUrlPath = fileUrlPath.slice(1);
+      try {
+        return fileURLToPath(rawUri);
+      } catch {
+        // Fallback for non-standard file URIs
       }
-      return decodeURIComponent(fileUrlPath);
     }
     return rawUri;
   }

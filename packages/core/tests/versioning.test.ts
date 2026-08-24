@@ -31,7 +31,6 @@ test("Version protects SemVer formatting, comparison, and incrementation invaria
 
   // SemVer comparison
   const v2 = Version.from("2.0.0");
-  const v1_5 = Version.from("1.5.0");
 
   assert.equal(v1.compare(v2) < 0, true);
   assert.equal(v2.compare(v1) > 0, true);
@@ -50,6 +49,34 @@ test("Version protects SemVer formatting, comparison, and incrementation invaria
 
   assert.throws(() => new Version(""), InvalidDatasetError);
   assert.throws(() => new Version("invalid-version-format-abc!!!"), InvalidDatasetError);
+});
+
+test("Version strictly adheres to SemVer 2.0 prerelease precedence and build metadata rules", () => {
+  // Numeric vs string prerelease precedence (1.0.0-alpha.2 < 1.0.0-alpha.10)
+  const vAlpha2 = Version.from("1.0.0-alpha.2");
+  const vAlpha10 = Version.from("1.0.0-alpha.10");
+  assert.equal(vAlpha2.isLessThan(vAlpha10), true);
+
+  // Field length precedence (1.0.0-alpha < 1.0.0-alpha.1)
+  const vAlpha = Version.from("1.0.0-alpha");
+  const vAlpha1 = Version.from("1.0.0-alpha.1");
+  assert.equal(vAlpha.isLessThan(vAlpha1), true);
+
+  // Lexical prerelease comparison (1.0.0-alpha.1 < 1.0.0-beta.1)
+  const vBeta1 = Version.from("1.0.0-beta.1");
+  assert.equal(vAlpha1.isLessThan(vBeta1), true);
+
+  // Build metadata parsing and precedence equality (1.0.0+build.1 == 1.0.0+build.2)
+  const vBuild1 = Version.from("1.0.0+build.1");
+  const vBuild2 = Version.from("1.0.0+build.2");
+  assert.equal(vBuild1.getBuildMetadata(), "build.1");
+  assert.equal(vBuild1.compare(vBuild2), 0);
+  assert.equal(vBuild1.equals(vBuild2), true);
+
+  // Valid SemVer 2.0 with prerelease + build metadata
+  const vComplex = Version.from("1.0.0-alpha+001");
+  assert.equal(vComplex.getPrerelease(), "alpha");
+  assert.equal(vComplex.getBuildMetadata(), "001");
 });
 
 test("DatasetVersion maintains immutable published version guarantees", () => {
@@ -185,4 +212,40 @@ test("DatasetDiffEngine accurately identifies added, removed, modified, and unch
   assert.equal(mod.changes.includes("content"), true);
   assert.equal(mod.changes.includes("name"), true);
   assert.equal(mod.changes.includes("metadata"), true);
+});
+
+test("DatasetDiffEngine supports custom identity key mapping for content-addressed documents", () => {
+  const datasetId = DatasetId.from("ds_content_addressed");
+
+  // Content-addressed documents (ID derived from content SHA-256)
+  const docBefore = new Document({
+    id: DocumentId.from(ContentHasher.hashString("Original Content").getValue()),
+    datasetId,
+    name: DocumentName.from("Guide.md"),
+    type: DocumentType.TEXT,
+    content: "Original Content",
+  });
+
+  const docAfter = new Document({
+    id: DocumentId.from(ContentHasher.hashString("Updated Content").getValue()),
+    datasetId,
+    name: DocumentName.from("Guide.md"),
+    type: DocumentType.TEXT,
+    content: "Updated Content",
+  });
+
+  // Default matching by DocumentId: content edit produces new ID -> 1 removal, 1 addition
+  const defaultDiff = DatasetDiffEngine.diff([docBefore], [docAfter]);
+  assert.equal(defaultDiff.summary.totalRemoved, 1);
+  assert.equal(defaultDiff.summary.totalAdded, 1);
+  assert.equal(defaultDiff.summary.totalModified, 0);
+
+  // Logical key matching by document name: identifies content modification
+  const logicalDiff = DatasetDiffEngine.diff([docBefore], [docAfter], {
+    getIdentityKey: (doc) => doc.getName().getValue(),
+  });
+  assert.equal(logicalDiff.summary.totalRemoved, 0);
+  assert.equal(logicalDiff.summary.totalAdded, 0);
+  assert.equal(logicalDiff.summary.totalModified, 1);
+  assert.equal(logicalDiff.modifiedDocuments[0].changes.includes("content"), true);
 });

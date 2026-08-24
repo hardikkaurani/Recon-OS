@@ -26,27 +26,61 @@ export interface DatasetDiffResult {
   readonly versionB?: DatasetVersion | null;
 }
 
+export interface DatasetDiffOptions {
+  versionA?: DatasetVersion | null;
+  versionB?: DatasetVersion | null;
+  /**
+   * Optional key selector for document matching across version points.
+   * Defaults to matching by DocumentId (doc.getId().getValue()).
+   * If DocumentId is content-addressed (derived from content hash), pass a logical key function
+   * (e.g., doc => doc.getName().getValue()) to map modifications across content updates.
+   */
+  getIdentityKey?: (doc: Document) => string;
+}
+
 /**
  * DatasetDiffEngine calculates differential diffs between document collections and dataset versions.
+ * 
+ * Identity Matching Behavior:
+ * - By default, documents are matched across versions by DocumentId (`doc.getId().getValue()`).
+ * - When DocumentId is a stable logical identifier, property updates (content, name, type, metadata) are classified as `modifiedDocuments`.
+ * - When DocumentId is content-addressed (derived from content hash), content edits produce a new DocumentId, classifying the change as 1 removal + 1 addition.
+ * - To track modifications across content-addressed updates, pass a custom `getIdentityKey` (e.g., `doc => doc.getName().getValue()`) in `DatasetDiffOptions`.
  */
 export class DatasetDiffEngine {
   /**
-   * Compares two document collections (and optional dataset versions) to compute added, removed, modified, and unchanged documents.
+   * Compares two document collections (and optional dataset versions or options) to compute added, removed, modified, and unchanged documents.
    */
   public static diff(
     beforeDocs: Iterable<Document>,
     afterDocs: Iterable<Document>,
-    versionA?: DatasetVersion | null,
-    versionB?: DatasetVersion | null
+    versionAOrOptions?: DatasetVersion | DatasetDiffOptions | null,
+    versionBParam?: DatasetVersion | null
   ): DatasetDiffResult {
+    let versionA: DatasetVersion | null = null;
+    let versionB: DatasetVersion | null = null;
+    let getIdentityKey: (doc: Document) => string = (d) => d.getId().getValue();
+
+    if (versionAOrOptions && typeof versionAOrOptions === "object" && !("getVersion" in versionAOrOptions)) {
+      const opts = versionAOrOptions as DatasetDiffOptions;
+      versionA = opts.versionA ?? null;
+      versionB = opts.versionB ?? null;
+      if (opts.getIdentityKey) {
+        getIdentityKey = opts.getIdentityKey;
+      }
+    } else {
+      versionA = (versionAOrOptions as DatasetVersion | null) ?? null;
+      versionB = versionBParam ?? null;
+    }
+
     const beforeMap = new Map<string, Document>();
     for (const doc of beforeDocs) {
-      beforeMap.set(doc.getId().getValue(), doc);
+      beforeMap.set(getIdentityKey(doc), doc);
     }
 
     const afterMap = new Map<string, Document>();
     for (const doc of afterDocs) {
-      afterMap.set(doc.getId().getValue(), doc);
+      afterMap.set(getIdentityKey(doc), doc);
     }
 
     const addedDocuments: Document[] = [];
@@ -55,8 +89,8 @@ export class DatasetDiffEngine {
     const unchangedDocuments: Document[] = [];
 
     // Detect added and modified/unchanged documents
-    for (const [id, afterDoc] of afterMap.entries()) {
-      const beforeDoc = beforeMap.get(id);
+    for (const [key, afterDoc] of afterMap.entries()) {
+      const beforeDoc = beforeMap.get(key);
       if (!beforeDoc) {
         addedDocuments.push(afterDoc);
       } else {
@@ -74,8 +108,8 @@ export class DatasetDiffEngine {
     }
 
     // Detect removed documents
-    for (const [id, beforeDoc] of beforeMap.entries()) {
-      if (!afterMap.has(id)) {
+    for (const [key, beforeDoc] of beforeMap.entries()) {
+      if (!afterMap.has(key)) {
         removedDocuments.push(beforeDoc);
       }
     }
@@ -93,8 +127,8 @@ export class DatasetDiffEngine {
       modifiedDocuments: Object.freeze(modifiedDocuments),
       unchangedDocuments: Object.freeze(unchangedDocuments),
       summary,
-      versionA: versionA ?? null,
-      versionB: versionB ?? null,
+      versionA,
+      versionB,
     };
   }
 

@@ -16,7 +16,6 @@ import {
   DocumentType,
   Version,
   DatasetSource,
-  URI,
   InvalidDatasetError,
 } from "../dist/index.js";
 
@@ -154,4 +153,103 @@ test("FileDatasetRepository manages persistence, safe streaming, and enforces ve
   assert.equal(await repo.exists(datasetId), false);
 
   await fs.rm(baseStorageDir, { recursive: true, force: true });
+});
+
+test("LocalFileSourceResolver handles standard RFC 8089 file URLs across platforms and special paths", async () => {
+  const resolver = new LocalFileSourceResolver();
+
+  // Paths with spaces and special characters
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "recon_uri test_"));
+  const pathWithSpaces = path.join(tmpDir, "file with spaces #1.txt");
+  await fs.writeFile(pathWithSpaces, "Content in space path", "utf8");
+
+  const res = await resolver.resolve(pathWithSpaces);
+  assert.equal(res.exists, true);
+  assert.equal(res.scheme, "file");
+  assert.equal(res.uri.getValue().startsWith("file://"), true);
+
+  // Test round-trip resolve using generated file:// URI
+  const roundTripRes = await resolver.resolve(res.uri.getValue());
+  assert.equal(roundTripRes.exists, true);
+  assert.equal(roundTripRes.pathOrLocation, path.resolve(pathWithSpaces));
+
+  await fs.rm(tmpDir, { recursive: true, force: true });
+});
+
+test("LocalFileDatasetLoader enforces configurable max file size limits and prevents unbounded memory accumulation", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "recon_loader_limit_test_"));
+
+  // 1. File at allowed size (100 bytes limit, file is 50 bytes)
+  const loader = new LocalFileDatasetLoader({ maxFileSizeBytes: 100 });
+  const smallFile = path.join(tmpDir, "small.txt");
+  await fs.writeFile(smallFile, "A".repeat(50), "utf8");
+
+  const smallResult = await loader.load(smallFile);
+  assert.equal(smallResult.documents.length, 1);
+  assert.equal(smallResult.documents[0].getContent().length, 50);
+
+  // 2. Oversized file (100 bytes limit, file is 150 bytes)
+  const largeFile = path.join(tmpDir, "large.txt");
+  await fs.writeFile(largeFile, "B".repeat(150), "utf8");
+
+  await assert.rejects(async () => {
+    await loader.load(largeFile);
+  }, InvalidDatasetError);
+
+  // 3. Oversized JSONL file
+  const largeJsonl = path.join(tmpDir, "large.jsonl");
+  const lines = Array.from({ length: 10 }, (_, i) => JSON.stringify({ id: `rec_${i}`, content: "X".repeat(20) })).join("\n");
+  await fs.writeFile(largeJsonl, lines, "utf8");
+
+  await assert.rejects(async () => {
+    await loader.load(largeJsonl);
+  }, InvalidDatasetError);
+
+  await fs.rm(tmpDir, { recursive: true, force: true });
+});
+
+test("FileDatasetRepository propagates non-ENOENT filesystem errors during publishVersion", async () => {
+  const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "recon_repo_err_test_"));
+  const repo = new FileDatasetRepository(tmpDir);
+
+  const datasetId = DatasetId.from("ds_err_001");
+  const dataset = new Dataset({
+    id: datasetId,
+    name: DatasetName.from("Err Test Dataset"),
+    version: Version.from("1.0.0"),
+    source: DatasetSource.from("file", tmpDir),
+  });
+
+  const doc = new Document({
+    id: DocumentId.from("doc_1"),
+    datasetId,
+    name: DocumentName.from("Doc 1"),
+    type: DocumentType.TEXT,
+    content: "Content",
+  });
+
+  // 1. Existing version throws InvalidDatasetError
+  const v1 = Version.from("1.0.0");
+  await repo.publishVersion(dataset, [doc], v1);
+  await assert.rejects(async () => {
+    await repo.publishVersion(dataset, [doc], v1);
+  }, InvalidDatasetError);
+
+  // 2. Non-ENOENT invalid path system error (e.g., null byte in path) is propagated and NOT swallowed
+  const badDatasetId = DatasetId.from("ds_err_\0_bad");
+  const badDataset = new Dataset({
+    id: badDatasetId,
+    name: DatasetName.from("Bad Dataset"),
+    version: Version.from("1.0.0"),
+    source: DatasetSource.from("file", tmpDir),
+  });
+
+  await assert.rejects(async () => {
+    await repo.publishVersion(badDataset, [doc], v1);
+  }, (err: unknown) => {
+    assert.equal(err instanceof InvalidDatasetError, false);
+    return true;
+  });
+
+  await fs.rm(tmpDir, { recursive: true, force: true });
 });
