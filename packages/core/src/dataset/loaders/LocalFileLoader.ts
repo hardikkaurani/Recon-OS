@@ -2,7 +2,7 @@ import { MimeType } from "../value-objects/MimeType.js";
 import { DocumentType } from "../enums/DocumentType.js";
 import { UnsupportedSourceError } from "../errors/DatasetError.js";
 import { BaseFileLoader } from "./BaseFileLoader.js";
-import { LocalFileSourceResolver } from "./LocalFileSourceResolver.js";
+import { LocalFileSourceResolver } from "../resolvers/LocalFileSourceResolver.js";
 
 /**
  * MIME types for the extensions supported by this loader.

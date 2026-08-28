@@ -4,7 +4,7 @@ import { pathToFileURL, fileURLToPath } from "node:url";
 import { SourceResolver, ResolvedSource } from "../interfaces/SourceResolver.js";
 import { DatasetSource } from "../value-objects/DatasetSource.js";
 import { URI } from "../value-objects/URI.js";
-import { InvalidDatasetError } from "../errors/DatasetError.js";
+import { UnsupportedSourceError } from "../errors/DatasetError.js";
 
 /**
  * LocalFileSourceResolver resolves local file paths and file:// URIs into ResolvedSource descriptors.
@@ -18,6 +18,7 @@ export class LocalFileSourceResolver implements SourceResolver {
     ".csv": "text/csv",
     ".tsv": "text/tab-separated-values",
     ".md": "text/markdown",
+    ".markdown": "text/markdown",
     ".xml": "application/xml",
     ".html": "text/html",
     ".parquet": "application/vnd.apache.parquet",
@@ -38,7 +39,7 @@ export class LocalFileSourceResolver implements SourceResolver {
   public async resolve(source: DatasetSource | URI | string): Promise<ResolvedSource> {
     if (!this.supports(source)) {
       const rawUri = this.extractRawUri(source);
-      throw new InvalidDatasetError(`Unsupported local file source URI: "${rawUri}"`);
+      throw new UnsupportedSourceError(`Unsupported local file source URI: "${rawUri}"`);
     }
 
     const rawUri = this.extractRawUri(source);
@@ -51,17 +52,26 @@ export class LocalFileSourceResolver implements SourceResolver {
 
     try {
       const stats = await fs.stat(absPath);
+      if (stats.isDirectory()) {
+        throw new UnsupportedSourceError(`Local file source "${absPath}" is a directory, not a file`);
+      }
       exists = true;
-      isDirectory = stats.isDirectory();
-      size = stats.size;
-    } catch {
-      exists = false;
       isDirectory = false;
-      size = 0;
+      size = stats.size;
+    } catch (err) {
+      if (err instanceof UnsupportedSourceError) throw err;
+      const code = (err as { code?: string }).code;
+      const reason =
+        code === "ENOENT"
+          ? "does not exist"
+          : code === "EACCES"
+            ? "is not accessible (permission denied)"
+            : `could not be accessed (${code ?? "unknown error"})`;
+      throw new UnsupportedSourceError(`Local file source "${absPath}" ${reason}`, { cause: err });
     }
 
     const ext = path.extname(absPath).toLowerCase();
-    const mediaType = LocalFileSourceResolver.EXTENSION_MEDIA_TYPES[ext] ?? "application/octet-stream";
+    const mediaType = LocalFileSourceResolver.EXTENSION_MEDIA_TYPES[ext];
     const fileUrl = pathToFileURL(absPath).href;
 
     return {

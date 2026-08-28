@@ -77,6 +77,16 @@ export abstract class BaseFileLoader implements FileLoader {
         // Resolution first — extension is derived from the resolved path, so
         // query strings or fragments on the original source cannot corrupt it.
         const resolved = await this.resolver.resolve(source);
+        if (resolved.exists === false) {
+            throw new UnsupportedSourceError(
+                `Local file source "${resolved.pathOrLocation}" does not exist`,
+            );
+        }
+        if (resolved.isDirectory === true) {
+            throw new UnsupportedSourceError(
+                `Local file source "${resolved.pathOrLocation}" is a directory, not a file`,
+            );
+        }
 
         const ext = this.extractExtension(resolved.pathOrLocation);
         this.assertSupportedExtension(ext, resolved.pathOrLocation);
@@ -93,10 +103,12 @@ export abstract class BaseFileLoader implements FileLoader {
         // Strict UTF-8 decode — fatal: true throws TypeError on invalid sequences.
         const content = this.decodeUtf8(rawBuffer, resolved.pathOrLocation);
 
-        // Prefer the MIME type provided by the resolver (which may have obtained
-        // it via Content-Type headers, OS mime-db, etc.); fall back to the
-        // subclass's static extension mapping when the resolver did not supply one.
-        const mimeValue = resolved.mediaType ?? this.getMimeType(ext).getValue();
+        // Prefer the MIME type provided by the resolver when specific;
+        // fall back to subclass extension mapping when missing or generic octet-stream.
+        const mimeValue =
+            resolved.mediaType && resolved.mediaType !== "application/octet-stream"
+                ? resolved.mediaType
+                : this.getMimeType(ext).getValue();
         const mime = MimeType.from(mimeValue);
 
         const docType = this.getDocumentType(ext);

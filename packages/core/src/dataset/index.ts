@@ -8,7 +8,6 @@ export * from "./validation/index.js";
 export * from "./serialization/index.js";
 export * from "./versioning/ContentHasher.js";
 export * from "./versioning/DatasetDiffEngine.js";
-export * from "./resolvers/LocalFileSourceResolver.js";
 export * from "./loaders/LocalFileDatasetLoader.js";
 export * from "./storage/FileDatasetRepository.js";
 
