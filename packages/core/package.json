@@ -22,6 +22,10 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "pnpm build && node --test tests/dataset.test.ts tests/validation.test.ts tests/loader.test.ts"
-  }
+    "test": "pnpm build && node --test tests/dataset.test.ts tests/validation.test.ts tests/loader.test.ts tests/pdf-loader.test.ts"
+  },
+  "dependencies": {
+    "pdf-parse": "^2.4.5"
+  },
+  "devDependencies": {}
 }

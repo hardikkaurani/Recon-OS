@@ -12,8 +12,12 @@ export class InvalidDatasetError extends DomainError {
 }
 
 export class InvalidDocumentError extends DomainError {
-  constructor(message: string) {
+  constructor(message: string, options?: { cause?: unknown }) {
     super(message, "INVALID_DOCUMENT");
+    if (options?.cause !== undefined) {
+      // Capture the original error so stack traces are preserved for debugging.
+      Object.defineProperty(this, "cause", { value: options.cause, enumerable: false });
+    }
   }
 }
 

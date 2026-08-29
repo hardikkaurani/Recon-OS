@@ -19,6 +19,33 @@ Domain models, interfaces, and primitives for the Recon-OS retrieval-augmented g
 | `.txt` | `TEXT` | `text/plain` |
 | `.md`, `.markdown` | `MARKDOWN` | `text/markdown` |
 | `.json` | `JSON` | `application/json` |
+| `.pdf` | `PDF` | `application/pdf` |
+
+## PDF Ingestion
+
+The `@recon-os/core` package provides a `PdfFileLoader` for ingesting PDF files.
+
+**What it does:** Extracts text from a PDF file using `pdf-parse`, generating a single `Document` entity containing the entire PDF's text.
+**Supported behavior:** It handles single-page and multi-page PDFs, preserving text order.
+**Document metadata:** PDF metadata is stored cleanly inside `DocumentMetadata` with keys:
+- `totalPages`: the total number of pages in the PDF source artifact
+- `title`: the title extracted from the PDF metadata (if present)
+**Error behavior:** Rejects encrypted or corrupted PDFs, throwing an `InvalidDocumentError`.
+**Limitations:** Does not perform OCR. Images and layout tables are not reconstructed unless the underlying text parser (`pdf-parse`) naturally extracts them.
+
+### Minimal Usage Example
+
+```ts
+import { PdfFileLoader, DatasetSource, DatasetId } from "@recon-os/core";
+
+const loader = new PdfFileLoader();
+const source = DatasetSource.from("file", "/path/to/report.pdf");
+const datasetId = DatasetId.from("ds_papers_001");
+
+const doc = await loader.load(source, datasetId);
+console.log(doc.getContent()); // All extracted PDF text
+console.log(doc.getMetadata().get("totalPages")); // Total number of pages
+```
 
 ## Usage
 
