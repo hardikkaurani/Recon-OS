@@ -12,15 +12,16 @@ import { DocumentId } from "../value-objects/DocumentId.js";
 import { DocumentName } from "../value-objects/DocumentName.js";
 import { DocumentFingerprint } from "../value-objects/DocumentFingerprint.js";
 import { DocumentMetadata } from "../value-objects/DocumentMetadata.js";
+import { Encoding } from "../value-objects/Encoding.js";
 import { Document } from "../entities/Document.js";
-import { InvalidDocumentError, UnsupportedSourceError } from "../errors/DatasetError.js";
+import { InvalidDocumentError } from "../errors/DatasetError.js";
 
 const SUPPORTED_EXTENSIONS: ReadonlySet<string> = new Set(["txt", "log"]);
 
 /**
  * Loads local plain-text files (.txt, .log) into Recon-OS {@link Document} entities.
  *
- * Implements encoding resolution (UTF-8, UTF-16LE, UTF-16BE, ASCII) with BOM handling
+ * Implements encoding resolution (UTF-8, UTF-16LE, UTF-16BE) with BOM handling
  * and populates text statistics (lines, words, characters, encoding) in {@link DocumentMetadata}.
  */
 export class TextFileLoader extends BaseFileLoader {
@@ -51,16 +52,6 @@ export class TextFileLoader extends BaseFileLoader {
      */
     public override async load(source: DatasetSource, datasetId: DatasetId): Promise<Document> {
         const resolved = await this.resolver.resolve(source);
-        if (resolved.exists === false) {
-            throw new UnsupportedSourceError(
-                `Local file source "${resolved.pathOrLocation}" does not exist`,
-            );
-        }
-        if (resolved.isDirectory === true) {
-            throw new UnsupportedSourceError(
-                `Local file source "${resolved.pathOrLocation}" is a directory, not a file`,
-            );
-        }
 
         const ext = this.extractExtension(resolved.pathOrLocation);
         this.assertSupportedExtension(ext, resolved.pathOrLocation);
@@ -73,10 +64,7 @@ export class TextFileLoader extends BaseFileLoader {
         const fingerprint = DocumentFingerprint.from(sha256hex, "SHA-256");
 
         const { content, encoding } = this.resolveEncodingAndDecode(rawBuffer, resolved.pathOrLocation);
-
-        const lines = content.length === 0 ? 0 : content.split(/\r\n|\r|\n/).length;
-        const words = content.trim().length === 0 ? 0 : content.trim().split(/\s+/).filter(Boolean).length;
-        const characters = content.length;
+        const { lines, words, characters } = this.computeTextStats(content);
 
         const mimeValue =
             resolved.mediaType && resolved.mediaType !== "application/octet-stream"
@@ -98,7 +86,7 @@ export class TextFileLoader extends BaseFileLoader {
             lines,
             words,
             characters,
-            encoding,
+            encoding: Encoding.from(encoding).getValue(),
         });
 
         const id = DocumentId.from(sha256hex);
@@ -116,43 +104,101 @@ export class TextFileLoader extends BaseFileLoader {
     }
 
     /**
+     * Efficiently scans content to compute line count, word count, and character count
+     * in O(N) time and O(1) auxiliary space without intermediate substring allocations.
+     * Correctly handles CRLF, LF, CR line endings and trailing newlines.
+     */
+    private computeTextStats(content: string): { lines: number; words: number; characters: number } {
+        const characters = content.length;
+        if (characters === 0) {
+            return { lines: 0, words: 0, characters: 0 };
+        }
+
+        let lineBreaks = 0;
+        let words = 0;
+        let inWord = false;
+        let endsWithLineBreak = false;
+
+        for (let i = 0; i < characters; i++) {
+            const code = content.charCodeAt(i);
+
+            if (code === 10) { // \n
+                lineBreaks++;
+                endsWithLineBreak = true;
+            } else if (code === 13) { // \r
+                lineBreaks++;
+                endsWithLineBreak = true;
+                if (i + 1 < characters && content.charCodeAt(i + 1) === 10) {
+                    i++;
+                }
+            } else {
+                endsWithLineBreak = false;
+            }
+
+            const isWs = code <= 32 || (code >= 0x7f && /\s/.test(content[i]!));
+            if (isWs) {
+                inWord = false;
+            } else if (!inWord) {
+                inWord = true;
+                words++;
+            }
+        }
+
+        const lines = endsWithLineBreak ? lineBreaks : lineBreaks + 1;
+        return { lines, words, characters };
+    }
+
+    /**
      * Resolves file encoding by BOM detection or fallback to strict UTF-8 decoding.
+     * Rejects unsupported encodings (UTF-32) and malformed payloads with domain errors.
      */
     private resolveEncodingAndDecode(buffer: Buffer, sourcePath: string): { content: string; encoding: string } {
+        // UTF-32LE BOM: 0xFF, 0xFE, 0x00, 0x00 (must be checked before UTF-16LE BOM)
+        if (buffer.length >= 4 && buffer[0] === 0xFF && buffer[1] === 0xFE && buffer[2] === 0x00 && buffer[3] === 0x00) {
+            throw new InvalidDocumentError(`File "${sourcePath}" uses unsupported UTF-32LE encoding`);
+        }
+
+        // UTF-32BE BOM: 0x00, 0x00, 0xFE, 0xFF
+        if (buffer.length >= 4 && buffer[0] === 0x00 && buffer[1] === 0x00 && buffer[2] === 0xFE && buffer[3] === 0xFF) {
+            throw new InvalidDocumentError(`File "${sourcePath}" uses unsupported UTF-32BE encoding`);
+        }
+
         // UTF-8 BOM: 0xEF, 0xBB, 0xBF
         if (buffer.length >= 3 && buffer[0] === 0xEF && buffer[1] === 0xBB && buffer[2] === 0xBF) {
             try {
                 const content = new TextDecoder("utf-8", { fatal: true }).decode(buffer.subarray(3));
                 return { content, encoding: "utf-8" };
-            } catch {
-                throw new InvalidDocumentError(`File "${sourcePath}" has UTF-8 BOM but invalid sequence`);
+            } catch (cause) {
+                throw new InvalidDocumentError(`File "${sourcePath}" has UTF-8 BOM but invalid sequence`, { cause });
             }
         }
 
         // UTF-16LE BOM: 0xFF, 0xFE
         if (buffer.length >= 2 && buffer[0] === 0xFF && buffer[1] === 0xFE) {
+            const payload = buffer.subarray(2);
+            if (payload.length % 2 !== 0) {
+                throw new InvalidDocumentError(`File "${sourcePath}" has an invalid UTF-16LE payload`);
+            }
             try {
-                const content = new TextDecoder("utf-16le", { fatal: true }).decode(buffer.subarray(2));
+                const content = new TextDecoder("utf-16le", { fatal: true }).decode(payload);
                 return { content, encoding: "utf-16le" };
-            } catch {
-                throw new InvalidDocumentError(`File "${sourcePath}" has UTF-16LE BOM but invalid sequence`);
+            } catch (cause) {
+                throw new InvalidDocumentError(`File "${sourcePath}" has UTF-16LE BOM but invalid sequence`, { cause });
             }
         }
 
         // UTF-16BE BOM: 0xFE, 0xFF
         if (buffer.length >= 2 && buffer[0] === 0xFE && buffer[1] === 0xFF) {
+            const payload = buffer.subarray(2);
+            if (payload.length % 2 !== 0) {
+                throw new InvalidDocumentError(`File "${sourcePath}" has an invalid UTF-16BE payload`);
+            }
             try {
-                // Node.js TextDecoder does not natively support 'utf-16be', swap pairs to utf-16le
-                const payload = buffer.subarray(2);
-                const swapped = Buffer.alloc(payload.length);
-                for (let i = 0; i < payload.length - 1; i += 2) {
-                    swapped[i] = payload[i + 1]!;
-                    swapped[i + 1] = payload[i]!;
-                }
+                const swapped = Buffer.from(payload).swap16();
                 const content = new TextDecoder("utf-16le", { fatal: true }).decode(swapped);
                 return { content, encoding: "utf-16be" };
-            } catch {
-                throw new InvalidDocumentError(`File "${sourcePath}" has UTF-16BE BOM but invalid sequence`);
+            } catch (cause) {
+                throw new InvalidDocumentError(`File "${sourcePath}" has UTF-16BE BOM but invalid sequence`, { cause });
             }
         }
 
@@ -160,9 +206,10 @@ export class TextFileLoader extends BaseFileLoader {
         try {
             const content = new TextDecoder("utf-8", { fatal: true }).decode(buffer);
             return { content, encoding: "utf-8" };
-        } catch {
+        } catch (cause) {
             throw new InvalidDocumentError(
                 `File "${sourcePath}" contains invalid byte sequences and cannot be decoded as text`,
+                { cause },
             );
         }
     }

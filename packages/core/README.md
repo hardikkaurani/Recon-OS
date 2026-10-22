@@ -16,10 +16,47 @@ Domain models, interfaces, and primitives for the Recon-OS retrieval-augmented g
 
 | Extension | `DocumentType` | MIME type |
 | --- | --- | --- |
-| `.txt` | `TEXT` | `text/plain` |
+| `.txt`, `.log` | `TEXT` | `text/plain` |
 | `.md`, `.markdown` | `MARKDOWN` | `text/markdown` |
 | `.json` | `JSON` | `application/json` |
 | `.pdf` | `PDF` | `application/pdf` |
+
+## Plain Text & Log Ingestion
+
+The `@recon-os/core` package provides `TextFileLoader` for ingesting plain text and log files (`.txt`, `.log`).
+
+**What it does:** Reads plain text files from local storage, resolves byte-order marks (BOM) for multiple character encodings, validates encoding integrity, and computes single-pass structural statistics without intermediate heap arrays.
+**Supported behavior:**
+- Supports `.txt` and `.log` extensions.
+- Detects and resolves BOMs: UTF-8 (`EF BB BF`), UTF-16LE (`FF FE`), and UTF-16BE (`FE FF`).
+- Falls back to strict UTF-8 decoding when no BOM is present.
+- Detects and rejects unsupported UTF-32 encodings (UTF-32LE `FF FE 00 00`, UTF-32BE `00 00 FE FF`) before UTF-16 inspection.
+**Document metadata:** Stores structural text attributes in `DocumentMetadata`:
+- `encoding`: Normalized canonical encoding string (e.g., `'UTF-8'`, `'UTF-16LE'`, `'UTF-16BE'`) via `Encoding` value object
+- `lines`: Number of lines, accounting for CRLF, LF, CR, and trailing newlines (empty files return 0)
+- `words`: Number of whitespace-separated tokens
+- `characters`: Total character count
+- `filename`, `extension`, `mimeType`, `sourceUri`, `sourcePath`, `sizeBytes`
+**Error behavior:**
+- Rejects non-existent paths, directories, and unsupported extensions with `UnsupportedSourceError`.
+- Rejects files exceeding the configured limit (defaults to 10 MiB, configurable via `maxFileSizeBytes`) with `UnsupportedSourceError`.
+- Rejects malformed UTF-8/UTF-16 sequences, odd-length UTF-16 payloads, and UTF-32 encodings with `InvalidDocumentError`, preserving root decoding exceptions via `{ cause }`.
+
+### Minimal Usage Example
+
+```ts
+import { TextFileLoader, DatasetSource, DatasetId } from "@recon-os/core";
+
+const loader = new TextFileLoader({ maxFileSizeBytes: 10 * 1024 * 1024 });
+const source = DatasetSource.from("file", "/path/to/system.log");
+const datasetId = DatasetId.from("ds_logs_001");
+
+const doc = await loader.load(source, datasetId);
+console.log(doc.getContent());
+console.log(doc.getMetadata().get("lines"));
+console.log(doc.getMetadata().get("encoding")); // "UTF-8"
+```
+
 
 ## PDF Ingestion
 

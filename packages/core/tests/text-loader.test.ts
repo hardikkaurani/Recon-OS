@@ -10,6 +10,7 @@ import {
     DatasetId,
     DocumentType,
     UnsupportedSourceError,
+    InvalidDocumentError,
 } from "../dist/index.js";
 
 describe("TextFileLoader & Encoding Resolution Engine (#17)", () => {
@@ -39,7 +40,10 @@ describe("TextFileLoader & Encoding Resolution Engine (#17)", () => {
         assert.equal(doc.getMetadata().get("lines"), 3);
         assert.equal(doc.getMetadata().get("words"), 9);
         assert.equal(doc.getMetadata().get("characters"), textContent.length);
-        assert.equal(doc.getMetadata().get("encoding"), "utf-8");
+        assert.equal(doc.getMetadata().get("encoding"), "UTF-8");
+        assert.equal(doc.getMetadata().get("filename"), "sample.txt");
+        assert.equal(doc.getMetadata().get("sourcePath"), filePath);
+        assert.equal(doc.getMetadata().get("sizeBytes"), Buffer.byteLength(textContent, "utf-8"));
     });
 
     test("2: Loads .log file as DocumentType.TEXT", async () => {
@@ -59,7 +63,6 @@ describe("TextFileLoader & Encoding Resolution Engine (#17)", () => {
     test("3: Resolves UTF-16LE with BOM without unicode replacement characters", async () => {
         const utf16lePath = join(testDir, "utf16le.txt");
         const text = "UTF-16 Little Endian encoded document";
-        // Create buffer with UTF-16LE BOM: 0xFF, 0xFE
         const textBuf = Buffer.from(text, "utf16le");
         const bomBuf = Buffer.from([0xFF, 0xFE]);
         const fullBuf = Buffer.concat([bomBuf, textBuf]);
@@ -70,13 +73,12 @@ describe("TextFileLoader & Encoding Resolution Engine (#17)", () => {
 
         assert.equal(doc.getContent(), text);
         assert.ok(!doc.getContent().includes("\uFFFD"), "Should not contain replacement characters");
-        assert.equal(doc.getMetadata().get("encoding"), "utf-16le");
+        assert.equal(doc.getMetadata().get("encoding"), "UTF-16LE");
     });
 
     test("4: Resolves UTF-16BE with BOM without unicode replacement characters", async () => {
         const utf16bePath = join(testDir, "utf16be.txt");
         const text = "UTF-16 Big Endian test";
-        // Manual UTF-16BE encoding with BOM 0xFE, 0xFF
         const bytes = [0xFE, 0xFF];
         for (let i = 0; i < text.length; i++) {
             const code = text.charCodeAt(i);
@@ -90,7 +92,7 @@ describe("TextFileLoader & Encoding Resolution Engine (#17)", () => {
 
         assert.equal(doc.getContent(), text);
         assert.ok(!doc.getContent().includes("\uFFFD"), "Should not contain replacement characters");
-        assert.equal(doc.getMetadata().get("encoding"), "utf-16be");
+        assert.equal(doc.getMetadata().get("encoding"), "UTF-16BE");
     });
 
     test("5: Handles UTF-8 BOM cleanly", async () => {
@@ -104,7 +106,7 @@ describe("TextFileLoader & Encoding Resolution Engine (#17)", () => {
         const doc = await loader.load(DatasetSource.from("file", bomPath), datasetId);
 
         assert.equal(doc.getContent(), text);
-        assert.equal(doc.getMetadata().get("encoding"), "utf-8");
+        assert.equal(doc.getMetadata().get("encoding"), "UTF-8");
     });
 
     test("6: Rejects unsupported file extensions (e.g. .pdf, .json)", async () => {
@@ -141,5 +143,157 @@ describe("TextFileLoader & Encoding Resolution Engine (#17)", () => {
         const doc2 = await loader.load(DatasetSource.from("file", path2), datasetId);
 
         assert.equal(doc1.getId().getValue(), doc2.getId().getValue());
+    });
+
+    test("9: Correctly counts lines for trailing LF and CRLF newlines without phantom lines", async () => {
+        const lfPath = join(testDir, "trailing_lf.txt");
+        await writeFile(lfPath, "line1\nline2\n", "utf-8");
+
+        const crlfPath = join(testDir, "trailing_crlf.txt");
+        await writeFile(crlfPath, "line1\r\nline2\r\n", "utf-8");
+
+        const loader = new TextFileLoader();
+        const docLf = await loader.load(DatasetSource.from("file", lfPath), datasetId);
+        assert.equal(docLf.getMetadata().get("lines"), 2);
+        assert.equal(docLf.getMetadata().get("words"), 2);
+
+        const docCrlf = await loader.load(DatasetSource.from("file", crlfPath), datasetId);
+        assert.equal(docCrlf.getMetadata().get("lines"), 2);
+        assert.equal(docCrlf.getMetadata().get("words"), 2);
+    });
+
+    test("10: Correctly reports zero lines, words, and characters for empty files", async () => {
+        const emptyPath = join(testDir, "empty.txt");
+        await writeFile(emptyPath, "", "utf-8");
+
+        const loader = new TextFileLoader();
+        const doc = await loader.load(DatasetSource.from("file", emptyPath), datasetId);
+
+        assert.equal(doc.getContent(), "");
+        assert.equal(doc.getMetadata().get("lines"), 0);
+        assert.equal(doc.getMetadata().get("words"), 0);
+        assert.equal(doc.getMetadata().get("characters"), 0);
+    });
+
+    test("11: Detects and rejects UTF-32LE BOM before matching UTF-16LE", async () => {
+        const utf32lePath = join(testDir, "utf32le.txt");
+        // UTF-32LE BOM: 0xFF, 0xFE, 0x00, 0x00
+        const utf32leBuf = Buffer.from([0xFF, 0xFE, 0x00, 0x00, 0x41, 0x00, 0x00, 0x00]);
+        await writeFile(utf32lePath, utf32leBuf);
+
+        const loader = new TextFileLoader();
+        await assert.rejects(
+            async () => loader.load(DatasetSource.from("file", utf32lePath), datasetId),
+            (err: unknown) => {
+                assert.ok(err instanceof InvalidDocumentError);
+                assert.match(err.message, /unsupported UTF-32LE/);
+                return true;
+            }
+        );
+    });
+
+    test("12: Detects and rejects UTF-32BE BOM", async () => {
+        const utf32bePath = join(testDir, "utf32be.txt");
+        // UTF-32BE BOM: 0x00, 0x00, 0xFE, 0xFF
+        const utf32beBuf = Buffer.from([0x00, 0x00, 0xFE, 0xFF, 0x00, 0x00, 0x00, 0x41]);
+        await writeFile(utf32bePath, utf32beBuf);
+
+        const loader = new TextFileLoader();
+        await assert.rejects(
+            async () => loader.load(DatasetSource.from("file", utf32bePath), datasetId),
+            (err: unknown) => {
+                assert.ok(err instanceof InvalidDocumentError);
+                assert.match(err.message, /unsupported UTF-32BE/);
+                return true;
+            }
+        );
+    });
+
+    test("13: Rejects odd-length UTF-16LE and UTF-16BE payloads", async () => {
+        const oddLePath = join(testDir, "odd_utf16le.txt");
+        // UTF-16LE BOM (2 bytes) + 3 bytes payload = 5 bytes total
+        await writeFile(oddLePath, Buffer.from([0xFF, 0xFE, 0x41, 0x00, 0x42]));
+
+        const oddBePath = join(testDir, "odd_utf16be.txt");
+        // UTF-16BE BOM (2 bytes) + 3 bytes payload = 5 bytes total
+        await writeFile(oddBePath, Buffer.from([0xFE, 0xFF, 0x00, 0x41, 0x00]));
+
+        const loader = new TextFileLoader();
+
+        await assert.rejects(
+            async () => loader.load(DatasetSource.from("file", oddLePath), datasetId),
+            (err: unknown) => {
+                assert.ok(err instanceof InvalidDocumentError);
+                assert.match(err.message, /invalid UTF-16LE payload/);
+                return true;
+            }
+        );
+
+        await assert.rejects(
+            async () => loader.load(DatasetSource.from("file", oddBePath), datasetId),
+            (err: unknown) => {
+                assert.ok(err instanceof InvalidDocumentError);
+                assert.match(err.message, /invalid UTF-16BE payload/);
+                return true;
+            }
+        );
+    });
+
+    test("14: Preserves original decoder exception via error.cause on decoding failure", async () => {
+        const malformedUtf8Path = join(testDir, "malformed_utf8.txt");
+        // Invalid UTF-8 byte sequence: 0xC3 followed by invalid continuation byte 0x28
+        await writeFile(malformedUtf8Path, Buffer.from([0x48, 0x65, 0x6C, 0x6C, 0x6F, 0xC3, 0x28]));
+
+        const loader = new TextFileLoader();
+        await assert.rejects(
+            async () => loader.load(DatasetSource.from("file", malformedUtf8Path), datasetId),
+            (err: unknown) => {
+                assert.ok(err instanceof InvalidDocumentError);
+                assert.ok((err as { cause?: unknown }).cause !== undefined, "Expected error.cause to be defined");
+                return true;
+            }
+        );
+
+        const malformedBomPath = join(testDir, "malformed_bom_utf8.txt");
+        // UTF-8 BOM followed by invalid continuation sequence
+        await writeFile(malformedBomPath, Buffer.from([0xEF, 0xBB, 0xBF, 0xC3, 0x28]));
+
+        await assert.rejects(
+            async () => loader.load(DatasetSource.from("file", malformedBomPath), datasetId),
+            (err: unknown) => {
+                assert.ok(err instanceof InvalidDocumentError);
+                assert.ok((err as { cause?: unknown }).cause !== undefined, "Expected error.cause to be defined");
+                return true;
+            }
+        );
+    });
+
+    test("15: Rejects non-existent files and directories via resolver contract with UnsupportedSourceError", async () => {
+        const nonExistentPath = join(testDir, "does_not_exist.txt");
+        const loader = new TextFileLoader();
+
+        await assert.rejects(
+            async () => loader.load(DatasetSource.from("file", nonExistentPath), datasetId),
+            UnsupportedSourceError
+        );
+
+        await assert.rejects(
+            async () => loader.load(DatasetSource.from("file", testDir), datasetId),
+            UnsupportedSourceError
+        );
+    });
+
+    test("16: Efficiently scans large input with O(1) auxiliary allocation", async () => {
+        const largePath = join(testDir, "large_stats.txt");
+        const line = "Alpha beta gamma delta epsilon zeta eta theta iota kappa.\n";
+        const content = line.repeat(5000); // 5000 lines, 50000 words
+        await writeFile(largePath, content, "utf-8");
+
+        const loader = new TextFileLoader({ maxFileSizeBytes: 10 * 1024 * 1024 });
+        const doc = await loader.load(DatasetSource.from("file", largePath), datasetId);
+
+        assert.equal(doc.getMetadata().get("lines"), 5000);
+        assert.equal(doc.getMetadata().get("words"), 50000);
+        assert.equal(doc.getMetadata().get("characters"), content.length);
     });
 });
