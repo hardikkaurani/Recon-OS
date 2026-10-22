@@ -20,6 +20,36 @@ Domain models, interfaces, and primitives for the Recon-OS retrieval-augmented g
 | `.md`, `.markdown` | `MARKDOWN` | `text/markdown` |
 | `.json` | `JSON` | `application/json` |
 | `.pdf` | `PDF` | `application/pdf` |
+| `.csv` | `CSV` | `text/csv` |
+| `.tsv` | `CSV` | `text/tab-separated-values` |
+
+## CSV and TSV Ingestion
+
+The `@recon-os/core` package provides `CsvFileLoader` for ingesting tabular CSV and TSV data files.
+
+**What it does:** Ingests local `.csv` and `.tsv` files, parses column headers and rows (supporting quoted fields, multiline cells, and escaped quotes per RFC 4180), generates structured tabular text (Markdown table or record entries), and populates rich metadata.
+**Metadata extracted:**
+- `delimiter`: Delimiter character used (e.g. `,`, `\t`, `;`).
+- `rowCount` / `rows`: Total number of data rows (excluding headers).
+- `columnCount`: Total number of header columns.
+- `columns`: Array of header column name strings.
+- `lines`, `words`, `characters`: Accurate text metrics computed via a memory-efficient single-pass scanner.
+**Error behavior:** Rejects unsupported extensions, missing files, directories, files exceeding `maxFileSizeBytes` (default 10 MiB), unclosed quotes, and invalid UTF-8 byte sequences.
+
+### Minimal Usage Example
+
+```ts
+import { CsvFileLoader, DatasetSource, DatasetId } from "@recon-os/core";
+
+const loader = new CsvFileLoader();
+const source = DatasetSource.from("file", "/path/to/data.csv");
+const datasetId = DatasetId.from("ds_tabular_001");
+
+const doc = await loader.load(source, datasetId);
+console.log(doc.getContent()); // Structured Markdown table representation
+console.log(doc.getMetadata().get("rowCount")); // Number of data rows
+console.log(doc.getMetadata().get("columns")); // ['id', 'name', 'score']
+```
 
 ## PDF Ingestion
 
