@@ -21,6 +21,37 @@ Domain models, interfaces, and primitives for the Recon-OS retrieval-augmented g
 | `.json` | `JSON` | `application/json` |
 | `.pdf` | `PDF` | `application/pdf` |
 
+## Web & Remote URL Ingestion
+
+The `@recon-os/core` package provides `WebUrlLoader` and `HttpSourceResolver` for fetching and ingesting remote HTTP and HTTPS resources directly.
+
+**What it does:** Fetches web pages, APIs, and remote text resources directly via HTTP/HTTPS GET requests, following redirects and preserving canonical URLs.
+**Supported behavior:**
+- Configurable network timeouts and custom request headers (including `User-Agent`).
+- Automatic MIME type inference and mapping into `DocumentType` (HTML, JSON, Markdown, CSV, TEXT).
+- Captures response headers into `DocumentMetadata`: `statusCode`, `contentType`, `mimeType`, `etag`, `lastModified`, and `canonicalUrl`.
+- Single-pass \(O(1)\) space text scanner for lines, words, and characters metrics.
+**Error behavior:**
+- Rejects non-HTTP schemes with `UnsupportedSourceError`.
+- Translates HTTP errors (404 Not Found, 5xx Server Errors, non-2xx status codes) to structured `InvalidDocumentError`.
+- Enforces response size guards against `Content-Length` and buffer length.
+- Translates network timeouts and connection failures into `InvalidDocumentError` with cause preservation.
+
+### Minimal Usage Example
+
+```ts
+import { WebUrlLoader, DatasetSource, DatasetId } from "@recon-os/core";
+
+const loader = new WebUrlLoader({ timeoutMs: 5000 });
+const source = DatasetSource.from("url", "https://example.com/article");
+const datasetId = DatasetId.from("ds_web_001");
+
+const doc = await loader.load(source, datasetId);
+console.log(doc.getContent()); // Web response body text
+console.log(doc.getMetadata().get("canonicalUrl")); // Canonical URL after redirects
+console.log(doc.getMetadata().get("statusCode")); // e.g. 200
+```
+
 ## PDF Ingestion
 
 The `@recon-os/core` package provides a `PdfFileLoader` for ingesting PDF files.
