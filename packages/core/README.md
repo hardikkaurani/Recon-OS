@@ -20,6 +20,36 @@ Domain models, interfaces, and primitives for the Recon-OS retrieval-augmented g
 | `.md`, `.markdown` | `MARKDOWN` | `text/markdown` |
 | `.json` | `JSON` | `application/json` |
 | `.pdf` | `PDF` | `application/pdf` |
+| `.html`, `.htm` | `HTML` | `text/html` |
+
+## HTML Ingestion
+
+The `@recon-os/core` package provides `HtmlFileLoader` for ingesting HTML documents.
+
+**What it does:** Ingests local `.html` and `.htm` files, strips boilerplate tags (`<script>`, `<style>`, `<nav>`, `<footer>`, `<noscript>`, `<svg>`, comments), extracts clean readable text, and populates document metadata.
+**Metadata extracted:**
+- `title`: Extracted from the HTML `<title>` tag.
+- `description`: Extracted from `<meta name="description" content="...">`.
+- `keywords`: Extracted from `<meta name="keywords" content="...">`.
+- `ogTitle`, `ogDescription`, `ogType`, `ogUrl`: Extracted from OpenGraph meta properties.
+- `lines`, `words`, `characters`: Accurate text metrics computed via a memory-efficient single-pass scanner.
+**Error behavior:** Rejects unsupported extensions, missing files, directories, files exceeding `maxFileSizeBytes` (default 10 MiB), and invalid UTF-8 byte sequences.
+
+### Usage Example
+
+```ts
+import { HtmlFileLoader, DatasetSource, DatasetId } from "@recon-os/core";
+
+const loader = new HtmlFileLoader();
+const source = DatasetSource.from("file", "/path/to/article.html");
+const datasetId = DatasetId.from("ds_articles_001");
+
+const doc = await loader.load(source, datasetId);
+console.log(doc.getContent()); // Clean sanitized body text
+console.log(doc.getMetadata().get("title")); // Extracted title
+console.log(doc.getMetadata().get("description")); // Meta description
+```
+
 
 ## PDF Ingestion
 
