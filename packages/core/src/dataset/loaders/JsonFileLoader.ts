@@ -94,6 +94,20 @@ export class JsonFileLoader extends BaseFileLoader {
   }
 
   /**
+   * Decodes raw bytes to strict UTF-8 text, preserving the underlying error as cause.
+   */
+  protected override decodeUtf8(buffer: Buffer, sourcePath: string): string {
+    try {
+      return new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+    } catch (err) {
+      throw new InvalidDocumentError(
+        `File "${sourcePath}" contains invalid UTF-8 byte sequences and cannot be decoded`,
+        { cause: err },
+      );
+    }
+  }
+
+  /**
    * Loads a JSON or JSONL file into a single aggregate Document entity.
    */
   public override async load(source: DatasetSource, datasetId: DatasetId): Promise<Document> {

@@ -287,13 +287,18 @@ suite("JsonFileLoader", () => {
     );
   });
 
-  test("17: invalid UTF-8 bytes throw InvalidDocumentError", async () => {
+  test("17: invalid UTF-8 bytes throw InvalidDocumentError with cause preserved", async () => {
     const filePath = join(tempDir, "invalid-utf8.json");
     await writeFile(filePath, Buffer.from([0x80, 0x81, 0xff]));
 
     await assert.rejects(
       () => loader.load(DatasetSource.from("file", filePath), DS_ID),
-      InvalidDocumentError,
+      (err: unknown) => {
+        assert.ok(err instanceof InvalidDocumentError);
+        const docErr = err as InvalidDocumentError & { cause?: unknown };
+        assert.ok(docErr.cause !== undefined, "error.cause must be preserved for UTF-8 decode errors");
+        return true;
+      },
     );
   });
 });
